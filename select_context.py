@@ -2,7 +2,7 @@ import sys
 import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QListWidget, QFileDialog,
-                             QMessageBox, QLabel)
+                             QMessageBox, QLabel, QCheckBox)
 from PyQt6.QtCore import Qt, QEvent, QMimeData, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut, QDragEnterEvent, QDropEvent
 import pyperclip
@@ -36,7 +36,6 @@ class DragDropListWidget(QListWidget):
                 if url.isLocalFile():
                     file_path = str(url.toLocalFile())
                     if os.path.isdir(file_path):
-                        # Process all files in the dropped folder recursively
                         for root, _, files in os.walk(file_path):
                             for file in files:
                                 links.append(os.path.join(root, file))
@@ -55,6 +54,9 @@ class ContextFileCreator(QMainWindow):
 
         self.selected_files = []
         self.root_folder = ""
+        self.ignore_build_folders = True
+        self.ignore_jars = True
+        self.ignore_git = True
 
         self.initUI()
 
@@ -63,20 +65,34 @@ class ContextFileCreator(QMainWindow):
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
 
-        # Root folder display
         self.root_label = QLabel("Root: Not set")
         layout.addWidget(self.root_label)
 
-        # File list with drag and drop support
+        filter_layout = QHBoxLayout()
+        self.ignore_build_checkbox = QCheckBox("Ignore build folders")
+        self.ignore_build_checkbox.setChecked(True)
+        self.ignore_build_checkbox.stateChanged.connect(self.update_ignore_build)
+        filter_layout.addWidget(self.ignore_build_checkbox)
+
+        self.ignore_jars_checkbox = QCheckBox("Ignore JAR files")
+        self.ignore_jars_checkbox.setChecked(True)
+        self.ignore_jars_checkbox.stateChanged.connect(self.update_ignore_jars)
+        filter_layout.addWidget(self.ignore_jars_checkbox)
+
+        self.ignore_git_checkbox = QCheckBox("Ignore .git/.idea folders")
+        self.ignore_git_checkbox.setChecked(True)
+        self.ignore_git_checkbox.stateChanged.connect(self.update_ignore_git)
+        filter_layout.addWidget(self.ignore_git_checkbox)
+
+        layout.addLayout(filter_layout)
+
         self.file_list = DragDropListWidget()
         self.file_list.filesDropped.connect(self.add_dropped_files)
         layout.addWidget(self.file_list)
 
-        # Add delete key shortcut
         self.delete_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.file_list)
         self.delete_shortcut.activated.connect(self.remove_selected_file)
 
-        # Buttons
         button_layout = QHBoxLayout()
 
         add_files_btn = QPushButton("Add Files")
@@ -105,9 +121,37 @@ class ContextFileCreator(QMainWindow):
 
         layout.addLayout(button_layout)
 
+    def should_ignore(self, path):
+        path_parts = path.split(os.sep)
+
+        if self.ignore_build_folders:
+            build_folder_names = ['build', 'target', 'out', '.gradle']
+            if any(folder in path_parts for folder in build_folder_names):
+                return True
+
+        if self.ignore_git:
+            git_folders = ['.git', '.idea']
+            if any(folder in path_parts for folder in git_folders):
+                return True
+
+        if self.ignore_jars and path.lower().endswith('.jar'):
+            return True
+
+        return False
+
+    def update_ignore_build(self, state):
+        self.ignore_build_folders = state == Qt.CheckState.Checked.value
+
+    def update_ignore_jars(self, state):
+        self.ignore_jars = state == Qt.CheckState.Checked.value
+
+    def update_ignore_git(self, state):
+        self.ignore_git = state == Qt.CheckState.Checked.value
+
     def add_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select Files")
-        self.add_files_without_duplicates(files)
+        filtered_files = [f for f in files if not self.should_ignore(f)]
+        self.add_files_without_duplicates(filtered_files)
         self.update_root_folder()
 
     def add_folder(self):
@@ -115,17 +159,21 @@ class ContextFileCreator(QMainWindow):
         if folder:
             files_to_add = []
             for root, _, files in os.walk(folder):
+                if self.should_ignore(root):
+                    continue
                 for file in files:
-                    files_to_add.append(os.path.join(root, file))
+                    file_path = os.path.join(root, file)
+                    if not self.should_ignore(file_path):
+                        files_to_add.append(file_path)
             self.add_files_without_duplicates(files_to_add)
             self.update_root_folder()
 
     def add_dropped_files(self, file_paths):
-        self.add_files_without_duplicates(file_paths)
+        filtered_files = [f for f in file_paths if not self.should_ignore(f)]
+        self.add_files_without_duplicates(filtered_files)
         self.update_root_folder()
 
     def add_files_without_duplicates(self, files):
-        """Add files to the list, preventing duplicates"""
         added = 0
         skipped = 0
         for file in files:
@@ -137,7 +185,6 @@ class ContextFileCreator(QMainWindow):
 
         self.update_file_list()
 
-        # Show a message if duplicates were skipped
         if skipped > 0:
             QMessageBox.information(
                 self,
